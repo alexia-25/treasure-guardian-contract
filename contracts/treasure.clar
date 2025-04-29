@@ -96,3 +96,153 @@
     (<= (len text) max-chars)
   )
 )
+
+;; Increments the master treasure counter and returns previous value
+(define-private (advance-treasure-counter)
+  (let ((current-value (var-get treasure-count)))
+    (var-set treasure-count (+ current-value u1))
+    (ok current-value)
+  )
+)
+
+;; ==================================
+;; Public Operations
+;; ==================================
+
+;; Register a new treasure in the collection
+(define-public (register-treasure (name (string-ascii 64)) (dimension uint) (lore (string-ascii 128)) (classifications (list 10 (string-ascii 32))))
+  (let
+    (
+      (new-sequence (+ (var-get treasure-count) u1))  ;; Generate sequence number for new treasure
+    )
+    ;; Enforce input constraints
+    (asserts! (and (> (len name) u0) (< (len name) u65)) ERR-NAME-CONSTRAINT)      ;; Name must be 1-64 characters
+    (asserts! (and (> dimension u0) (< dimension u1000000000)) ERR-DIMENSION-CONSTRAINT)  ;; Dimension must be reasonable
+    (asserts! (and (> (len lore) u0) (< (len lore) u129)) ERR-NAME-CONSTRAINT)     ;; Lore must be 1-128 characters
+    (asserts! (validate-classifications classifications) ERR-NAME-CONSTRAINT)       ;; Classifications must be valid
+
+    ;; Record the treasure in the repository
+    (map-insert treasure-repository
+      { treasure-sequence: new-sequence }
+      {
+        name: name,
+        custodian: tx-sender,
+        dimension: dimension,
+        inception-block: block-height,
+        lore: lore,
+        classifications: classifications
+      }
+    )
+
+    ;; Grant initial permissions to custodian
+    (map-insert permission-matrix
+      { treasure-sequence: new-sequence, subject: tx-sender }
+      { permitted: true }
+    )
+
+    ;; Update the master counter
+    (var-set treasure-count new-sequence)
+    (ok new-sequence)  ;; Return the assigned sequence number
+  )
+)
+
+;; Retrieve the lore associated with a specific treasure
+(define-public (retrieve-lore (treasure-sequence uint))
+  ;; Fetches the narrative description of a treasure
+  (let
+    (
+      (treasure-data (unwrap! (map-get? treasure-repository { treasure-sequence: treasure-sequence }) ERR-TREASURE-NONEXISTENT))
+    )
+    (ok (get lore treasure-data))
+  )
+)
+
+;; Verify if a subject has permissions for a specific treasure
+(define-public (verify-subject-permission (treasure-sequence uint) (subject principal))
+  ;; Returns true if the subject has permission for the treasure
+  (let
+    (
+      (permission-data (map-get? permission-matrix { treasure-sequence: treasure-sequence, subject: subject }))
+    )
+    (ok (is-some permission-data))
+  )
+)
+
+;; Count the number of classifications associated with a treasure
+(define-public (count-classifications (treasure-sequence uint))
+  ;; Returns the total number of classifications for a treasure
+  (let
+    (
+      (treasure-data (unwrap! (map-get? treasure-repository { treasure-sequence: treasure-sequence }) ERR-TREASURE-NONEXISTENT))
+    )
+    (ok (len (get classifications treasure-data)))
+  )
+)
+
+;; Validate if a name meets the required constraints
+(define-public (validate-name (name (string-ascii 64)))
+  ;; Checks if name length is within acceptable bounds (1-64 characters)
+  (ok (and (> (len name) u0) (<= (len name) u64)))
+)
+
+;; Transfer custodial rights to another principal
+(define-public (transfer-custodianship (treasure-sequence uint) (new-custodian principal))
+  (let
+    (
+      (treasure-data (unwrap! (map-get? treasure-repository { treasure-sequence: treasure-sequence }) ERR-TREASURE-NONEXISTENT))
+    )
+    (asserts! (treasure-registered? treasure-sequence) ERR-TREASURE-NONEXISTENT)  ;; Verify treasure exists
+    (asserts! (is-eq (get custodian treasure-data) tx-sender) ERR-AUTHORITY-VIOLATION)  ;; Only current custodian can transfer
+
+    ;; Update the repository with new custodian
+    (map-set treasure-repository
+      { treasure-sequence: treasure-sequence }
+      (merge treasure-data { custodian: new-custodian })
+    )
+    (ok true)
+  )
+)
+
+;; Update treasure metadata and properties
+(define-public (update-treasure (treasure-sequence uint) (new-name (string-ascii 64)) (new-dimension uint) (new-lore (string-ascii 128)) (new-classifications (list 10 (string-ascii 32))))
+  (let
+    (
+      (treasure-data (unwrap! (map-get? treasure-repository { treasure-sequence: treasure-sequence }) ERR-TREASURE-NONEXISTENT))
+    )
+    ;; Validation conditions
+    (asserts! (treasure-registered? treasure-sequence) ERR-TREASURE-NONEXISTENT)  ;; Verify treasure exists
+    (asserts! (is-eq (get custodian treasure-data) tx-sender) ERR-AUTHORITY-VIOLATION)  ;; Only custodian can update
+    (asserts! (and (> (len new-name) u0) (< (len new-name) u65)) ERR-NAME-CONSTRAINT)  ;; Validate new name
+    (asserts! (and (> new-dimension u0) (< new-dimension u1000000000)) ERR-DIMENSION-CONSTRAINT)  ;; Validate new dimension
+    (asserts! (and (> (len new-lore) u0) (< (len new-lore) u129)) ERR-NAME-CONSTRAINT)  ;; Validate new lore
+    (asserts! (validate-classifications new-classifications) ERR-NAME-CONSTRAINT)  ;; Validate new classifications
+
+    ;; Update the treasure properties
+    (map-set treasure-repository
+      { treasure-sequence: treasure-sequence }
+      (merge treasure-data { 
+        name: new-name, 
+        dimension: new-dimension, 
+        lore: new-lore, 
+        classifications: new-classifications 
+      })
+    )
+    (ok true)
+  )
+)
+
+;; Remove a treasure from the collection
+(define-public (retire-treasure (treasure-sequence uint))
+  (let
+    (
+      (treasure-data (unwrap! (map-get? treasure-repository { treasure-sequence: treasure-sequence }) ERR-TREASURE-NONEXISTENT))
+    )
+    (asserts! (treasure-registered? treasure-sequence) ERR-TREASURE-NONEXISTENT)  ;; Verify treasure exists
+    (asserts! (is-eq (get custodian treasure-data) tx-sender) ERR-AUTHORITY-VIOLATION)  ;; Only custodian can retire
+
+    ;; Remove the treasure from the repository
+    (map-delete treasure-repository { treasure-sequence: treasure-sequence })
+    (ok true)
+  )
+)
+
